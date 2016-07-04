@@ -1,53 +1,56 @@
+#include "zmq.h"
+#include "czmq.h"
 #include <stdio.h>
-#include <czmq.h>
-#include <cv.h>
 
 #define BITS_PER_PIXEL 8
 #define WIDTH 160
 #define HEIGHT 120
+
 int main(int argc, char *argv[])
 {
 	//ff: frames file
 	FILE *ff;
-	//initializing IplImage
-	IplImage *frame;
 	//creating a point that will point to each segment of memory per frame
-	void *fdata;
+	void *fdata = NULL;
 	//sizes of data
-	size_t *bpp, *size;
-	bbp	= BITS_PER_PIXEL;
+	size_t bpp, size, size_bytes;
+	bpp	= BITS_PER_PIXEL;
 	size = WIDTH*HEIGHT;
-
-	zctx_t *context = zctx_new ();
-	
-	void *publisher = zsocket_new (context, ZMQ_PUB);
-	
-	if (argc == 2)
-		zsocket_bind (publisher, argv [1]);
-	else
-		zsocket_bind (publisher, "tcp://*:5556");
+	size_bytes = size*bpp;
+	void *publisher = zsock_new_pub("tcp://*:5556");
 
 	//  Ensure subscriber connection has time to complete
 	sleep (1);
 
 	ff=fopen(argv[1], "r");
 
-	//creates image header but does not allocate memory for image
-	frame = cvCreateImageHeader(size, IPL_DEPTH_8U, 1);
-
+	int x = 0;
+	
 	while(true)
 	{
 		sleep(62.5);
-		if(fread(fdata, bbp, size, ff) < size)
+		
+		if(fread(fdata, bpp, size, ff) < size)
 		{
 			printf("finished reading file, going to the beginning \n");
 			fseek(ff, SEEK_SET, 0);
 		}
-
+	
 		zchunk_t *chunk = zchunk_new(fdata, sizeof(fdata));
 
 		zframe_t *msg = zchunk_pack(chunk);
 		
 		zframe_send(&msg, publisher, 0);
+
+		printf("sent frame #%i\n", x);
+	
+		if(x == 1000)
+		{
+			printf("sent 1000 frames. That's enough.");
+			zsock_destroy(&publisher);
+			zchunk_destroy(&chunk);
+			zframe_destroy(&msg);
+			return 0;
+		}
 	}
 }
