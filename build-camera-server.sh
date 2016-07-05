@@ -1,1 +1,1 @@
-gcc -Wall camera-pipeline-server.c -o camera-pipeline-server -lczmq -lzmq 
+gcc -Wall camera-pipeline-server.c -o camera-pipeline-server -lzmq 
