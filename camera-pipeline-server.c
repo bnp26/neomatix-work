@@ -1,4 +1,7 @@
 #include "zmq.h"
+#include <assert.h>
+#include <string.h>
+#include <time.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -14,51 +17,73 @@ int main(int argc, char *argv[])
 	void *fdata = NULL;
 	//sizes of data
 	size_t bpp, size;
+	zmq_msg_t msg;
+	
+	if(argc != 2)
+	{
+		printf("INCORRECT FORMAT!\n");
+		printf("FORMAT:\t./camera-pipeline-server <file>\n");
+	}
+
 	bpp	= BITS_PER_PIXEL;
 	size = WIDTH*HEIGHT;
-	//zsock_t *publisher = zsock_new_pub("@tcp://localhost:5556");
+
+	int64_t affinity;
+	int rc;
 	//  Ensure subscriber connection has time to complete
+	
 	void *context = zmq_ctx_new();
 	void *publisher = zmq_socket(context, ZMQ_PUB);
-	int rc = zmq_bind(publisher, "tcp://*:5556");
-	if(rc != 0)
-	{	
-		printf("could not bind to tcp://*:5556");
-		return -1;
-	}
-	ff=fopen(argv[1], "r");
 
-	int x = 0;
+	//setting the affinity and the thread configurations for the server.
+
+	affinity = 1;
+	rc = zmq_setsockopt (publisher, ZMQ_AFFINITY, &affinity, sizeof affinity);
+	assert(rc == 0);
+
+	rc = zmq_bind(publisher, "tcp://*:5456");
+	assert(rc == 0);
+	printf("server socket bound to tcp://*:5456");
+
+	ff=fopen(argv[1], "r");
 	
+	time_t endtime;
+	time_t runtime_len = 20;
+	time_t curtime = time(NULL);
+	
+	endtime = curtime + runtime_len;
+	
+	int x = 0;
 	//zchunk_t *chunk;
 	//zframe_t *msg;
-	while(x < 1000)
+	while(difftime(endtime, curtime) >= 0)
 	{
 		printf("sleeping 62.5 miliseconds \n");
 		sleep(0.0625);
 		printf("reading data from file\n");
 		size_t dataSize = fread(fdata, bpp, size, ff);
+
+		rc = zmq_msg_init_size(&msg, dataSize);
+		assert(rc == 0);
+		
+		memcpy(zmq_msg_data(&msg), fdata, dataSize);
+
 		if(dataSize < size)
 		{
 			printf("finished reading file, going to the beginning \n");
 			fseek(ff, SEEK_SET, 0);
 		}
-		printf("read file, sending data.");	
+		printf("read file, sending data.\n");	
 		
-		zmq_send(publisher, fdata, dataSize, 0);
+		rc = zmq_msg_send (&msg, publisher, 0);
+		assert(rc == dataSize);
 
-		//chunk = zchunk_new(fdata, sizeof(fdata));
-
-		//msg = zchunk_pack(chunk);
-	
-		//zsock_send(publisher, "i124488zsbcfUhp", msg);	
-
+		zmq_msg_close(&msg);
+		
 		printf("sent frame #%i\n", x);
+		time(&curtime);
 		x+=1;
 	}	
-	printf("sent 1000 frames. That's enough.");
-	//zsock_destroy(&publisher);
-	//zchunk_destroy(&chunk);
-	//zframe_destroy(&msg);
+	printf("sent data for 120 seconds. That's enough... right???\n");
 	return 0;
 }
