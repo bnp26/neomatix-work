@@ -4,14 +4,12 @@
 //#include <gst/app/gstappsrc.h>
 #include <gst/rtsp-server/rtsp-server.h>
 #include <gst/rtsp/gstrtspurl.h>
-#include <stdlib.h>
+
 #include <memory.h>
 
 #define CAPS "video/x-raw,format=,width=160,height=120,pixel-aspect-ratio=1/1" 
 
 #define CHUNK_SIZE 153600
-
-static GMainLoop *loop;
 
 typedef struct _Frame Frame;
 
@@ -19,14 +17,13 @@ struct _Frame {
 	uint8_t *data;
 	int *frameNum;
 	GstClockTime timestamp;
-	gboolean is_white;
-	uint8_t	whiteframe[120*160];
-	uint8_t blackframe[120*160];
 };
 
 Frame *frameCtx;
 void *context;
 void *subscriber;
+
+uint8_t *blackframe, whiteframe;
 
 static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 {
@@ -34,17 +31,16 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 	GstBuffer *buffer;
 	GstFlowReturn ret;
 	zmq_msg_t msg;
-	int rc;
+	int rc, msg_recv_rc;
 	
 	zmq_msg_init (&msg);
-	rc = zmq_msg_recv (subscriber, &msg, 0);
-	if(rc == -1)
+	msg_recv_rc = zmq_msg_recv (subscriber, &msg, 0);
+	if(msg_recv_rc == -1)
 	{
-		
-		if(frame->is_white)
-			frame->data = (uint8_t *)frame->whiteframe;	
-		else
-			frame->data = (uint8_t *)frame->blackframe;
+		//creating a black frame
+		frame->data = blackframe;	
+
+//		g_printerr("size of black buffer: %p\n", &buffer);
 	}
 	else 
 	{
@@ -52,7 +48,6 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 		frame->data = zmq_msg_data(&msg);
 	}
 
-	frame->is_white = !frame->is_white;
 	rc = zmq_msg_close(&msg);
 	assert(rc == 0);
 
@@ -69,7 +64,7 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 
 	if (ret != GST_FLOW_OK)
 	{
-		g_main_loop_quit (loop);
+		return FALSE;
 	}
 	
 	return TRUE;
@@ -77,12 +72,21 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 
 int main(int argc, char *argv[])
 {
-	GstElement *pipeline, *source, *parser, *queue, *converter, *encoder, /* *payloader,*/ *sink;
-	
-	int rc, i;
+	GMainLoop *loop;
 	int loopsize = 160*120;
+	int i;
+	
+	uint8_t white[160*120];
+	uint8_t black[160*120];
+	for(i = 0; i < loopsize; i++){white[i] = 0xFF;black = 0x00;}
 
-	for(i = 0; i < loopsize; i++){frameCtx->whiteframe[i] = 0xFF;frameCtx->blackframe[i] = 0x00;}
+	blackframe = black;
+	whiteframe = white;
+
+	GstElement *pipeline, *source, *parser, *queue, *converter, *encoder, /* *payloader,*/ *sink;
+		
+	
+	int rc;
 
 	gst_init (&argc, &argv);
 	loop = g_main_loop_new(NULL, FALSE);
@@ -97,19 +101,17 @@ int main(int argc, char *argv[])
 	/*payloader = gst_element_factory_make("rtph264pay", "h264-payloader");*/
 	sink = gst_element_factory_make("tcpserversink", "tcp-server-sink");
 	
+	
 	if (!pipeline || !source || !parser || !queue || !converter || !encoder /*|| !payloader*/ || !sink) {
 		g_printerr ("Some elements could not be created. Exiting.\n");
 		return -1;
 	}
 	
 	g_object_set(G_OBJECT (sink), 
-		"host", "127.0.0.1",
 		"port", 4953, NULL);	
 
-	g_object_set (G_OBJECT (source),
-		"stream-type", 0,	
-		"format", GST_FORMAT_TIME,
-		"is-live", TRUE,	
+	g_object_set (G_OBJECT (source), 
+		"format", GST_FORMAT_TIME, 
 		"caps", gst_caps_new_simple ("video/x-raw",
 			"format", G_TYPE_STRING, "GRAY8",
 			"framerate", GST_TYPE_FRACTION, 16, 1,
@@ -117,17 +119,19 @@ int main(int argc, char *argv[])
 			"width", G_TYPE_INT, 160,
 			"height", G_TYPE_INT, 120,
 		NULL), NULL);
-	
+
 	gst_bin_add_many (GST_BIN (pipeline), source, parser, queue, converter, encoder, /*payloader,*/ sink, NULL);
 	
-	gst_element_link_many (source, parser, queue, converter, encoder, /*payloader,*/ sink, NULL);
+	g_printerr("added elements to pipeline\n");
 	
+	gst_element_link_many (source, parser, queue, converter, encoder, /*payloader,*/ sink, NULL);
+
+	g_printerr("linked elements in pipeline\n");
+
   	frameCtx = g_new0(Frame, 1);
-	frameCtx->data = malloc(160 * 120 * sizeof(uint8_t));
+  	frameCtx->data = 0x0;
 	frameCtx->frameNum = 0;
 	frameCtx->timestamp = 0;	
-	frameCtx->is_white = TRUE;
-
 	context = zmq_ctx_new();
 	subscriber = zmq_socket(context, ZMQ_SUB);
 	
@@ -141,22 +145,17 @@ int main(int argc, char *argv[])
 
 	// connecting to the server
 	rc = zmq_connect (subscriber, "tcp://localhost:5456");
-	if(rc == 0)
-		g_printerr("connected to tcp://localhost:5456\n");
+	assert(rc == 0);
+	printf("connected to tcp://localhost:5456");
 
 	g_signal_connect (source, "need-data", G_CALLBACK (need_data), frameCtx);
 	
 	/*play */
 	gst_element_set_state (pipeline, GST_STATE_PLAYING);
-	g_printerr("PLAY");
 	g_main_loop_run (loop);
-	
-	/*stop playing*/
-	gst_element_set_state (pipeline, GST_STATE_NULL);
-	g_printerr("STOP");
 
 	/* clean up */
-	free(frameCtx->data);
+	gst_element_set_state (pipeline, GST_STATE_NULL);
 	gst_object_unref (GST_OBJECT (source));
 	gst_object_unref (GST_OBJECT (parser));
 	gst_object_unref (GST_OBJECT (queue));

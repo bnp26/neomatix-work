@@ -14,7 +14,7 @@ int main(int argc, char *argv[])
 	//ff: frames file
 	FILE *ff;
 	//creating a point that will point to each segment of memory per frame
-	void *fdata = NULL;
+	uint8_t *fdata;
 	//sizes of data
 	size_t bpp, size;
 	zmq_msg_t msg;
@@ -25,8 +25,8 @@ int main(int argc, char *argv[])
 		printf("FORMAT:\t./camera-pipeline-server <file>\n");
 	}
 
-	bpp	= BITS_PER_PIXEL;
-	size = WIDTH*HEIGHT;
+	bpp	= 8;
+	size = 160*120;
 
 	int64_t affinity;
 	int rc;
@@ -56,12 +56,15 @@ int main(int argc, char *argv[])
 	int x = 0;
 	//zchunk_t *chunk;
 	//zframe_t *msg;
-	while(difftime(endtime, curtime) >= 0)
+	while(x < 40)
 	{
 		printf("sleeping 62.5 miliseconds \n");
 		sleep(0.0625);
 		printf("reading data from file\n");
+		fdata = (uint8_t*) malloc(bpp * size);
 		size_t dataSize = fread(fdata, bpp, size, ff);
+		
+		printf("real data size = %zu\n", dataSize);
 
 		rc = zmq_msg_init_size(&msg, dataSize);
 		assert(rc == 0);
@@ -71,7 +74,7 @@ int main(int argc, char *argv[])
 		if(dataSize < size)
 		{
 			printf("finished reading file, going to the beginning \n");
-			fseek(ff, SEEK_SET, 0);
+			rewind(ff);
 		}
 		printf("read file, sending data.\n");	
 		
