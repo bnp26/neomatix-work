@@ -20,10 +20,10 @@ struct _Frame {
 	int *frameNum;
 	GstClockTime timestamp;
 	gboolean is_white;
-	uint8_t	whiteframe[120*160];
-	uint8_t blackframe[120*160];
 };
 
+static uint8_t	whiteframe[120*160];
+static uint8_t blackframe[120*160];
 Frame *frameCtx;
 void *context;
 void *subscriber;
@@ -42,9 +42,9 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 	{
 		
 		if(frame->is_white)
-			frame->data = (uint8_t *)frame->whiteframe;	
+			frame->data = (uint8_t *)whiteframe;	
 		else
-			frame->data = (uint8_t *)frame->blackframe;
+			frame->data = (uint8_t *)blackframe;
 	}
 	else 
 	{
@@ -55,7 +55,7 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 	frame->is_white = !frame->is_white;
 	rc = zmq_msg_close(&msg);
 	assert(rc == 0);
-
+	
 	buffer = gst_buffer_new_wrapped((gpointer)frame->data, sizeof(frame->data));
 
 	GST_BUFFER_PTS (buffer) = frame->timestamp;	
@@ -65,13 +65,12 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 	
 	g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);	
 
-	gst_buffer_unref (buffer);
+//	gst_buffer_unref (buffer);
 
 	if (ret != GST_FLOW_OK)
 	{
 		g_main_loop_quit (loop);
 	}
-	
 	return TRUE;
 }                              
 
@@ -82,7 +81,7 @@ int main(int argc, char *argv[])
 	int rc, i;
 	int loopsize = 160*120;
 
-	for(i = 0; i < loopsize; i++){frameCtx->whiteframe[i] = 0xFF;frameCtx->blackframe[i] = 0x00;}
+	for(i = 0; i < loopsize; i++){whiteframe[i] = 0xFF;blackframe[i] = 0;}
 
 	gst_init (&argc, &argv);
 	loop = g_main_loop_new(NULL, FALSE);
@@ -95,7 +94,7 @@ int main(int argc, char *argv[])
 	converter = gst_element_factory_make("videoconvert","video-converter");
 	encoder = gst_element_factory_make("x264enc", "h264-encoder");
 	/*payloader = gst_element_factory_make("rtph264pay", "h264-payloader");*/
-	sink = gst_element_factory_make("tcpserversink", "tcp-server-sink");
+	sink = gst_element_factory_make("udpsink", "udp-sink");
 	
 	if (!pipeline || !source || !parser || !queue || !converter || !encoder /*|| !payloader*/ || !sink) {
 		g_printerr ("Some elements could not be created. Exiting.\n");
@@ -103,15 +102,14 @@ int main(int argc, char *argv[])
 	}
 	
 	g_object_set(G_OBJECT (sink), 
-		"host", "127.0.0.1",
-		"port", 4953, NULL);	
+		"host", "localhost",
+		"port", 5004, NULL);	
 
 	g_object_set (G_OBJECT (source),
 		"stream-type", 0,	
 		"format", GST_FORMAT_TIME,
-		"is-live", TRUE,	
 		"caps", gst_caps_new_simple ("video/x-raw",
-			"format", G_TYPE_STRING, "GRAY8",
+			"format", GST_FOURCC_FORMAT, "GRAY8",
 			"framerate", GST_TYPE_FRACTION, 16, 1,
 			"pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
 			"width", G_TYPE_INT, 160,

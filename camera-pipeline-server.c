@@ -4,6 +4,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <memory.h>
 
 #define BITS_PER_PIXEL 8
 #define WIDTH 160
@@ -41,7 +42,7 @@ int main(int argc, char *argv[])
 	rc = zmq_setsockopt (publisher, ZMQ_AFFINITY, &affinity, sizeof affinity);
 	assert(rc == 0);
 
-	rc = zmq_bind(publisher, "tcp://*:5456");
+	rc = zmq_bind(publisher, "tcp://127.0.0.1:5456");
 	assert(rc == 0);
 	printf("server socket bound to tcp://*:5456");
 
@@ -56,12 +57,11 @@ int main(int argc, char *argv[])
 	int x = 0;
 	//zchunk_t *chunk;
 	//zframe_t *msg;
-	while(x < 40)
+	while(x < 3000)
 	{
 		printf("sleeping 62.5 miliseconds \n");
 		sleep(0.0625);
 		printf("reading data from file\n");
-		fdata = (uint8_t*) malloc(bpp * size);
 		size_t dataSize = fread(fdata, bpp, size, ff);
 		
 		printf("real data size = %zu\n", dataSize);
