@@ -1,1 +1,1 @@
-gcc -Wall -g -ggdb camera-pipeline-tcp-client.c -o camera-pipeline-tcp-client -lczmq -lzmq $(pkg-config --cflags --libs gstreamer-1.0  gstreamer-rtsp-1.0 gstreamer-rtsp-server-1.0)
+gcc -Wall -g -ggdb camera-pipeline-tcp-client.c -o camera-pipeline-tcp-client -lpthread -lzmq $(pkg-config --cflags gstreamer-1.0 --libs gstreamer-1.0)

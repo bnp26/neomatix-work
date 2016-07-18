@@ -1,3 +1,4 @@
+#include <zmq.h>
 #include <gst/gst.h>
 
 #include <stdio.h>
@@ -20,6 +21,9 @@ struct _App
 
 };
 
+void *context;
+void *subscriber;
+
 App s_app;
 
 static gboolean
@@ -35,11 +39,10 @@ read_data (App * app)
         GdkPixbuf *pb;
         gboolean ok = TRUE;
 
-        pb = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 2, 160, 120);
-        gdk_pixbuf_fill(pb, 0xff);
-		len = 120*160*sizeof(guchar);
+        pb = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 160, 120);
+        gdk_pixbuf_fill(pb, 0x00);
+		len = 120*160*2;
 		buffer = gst_buffer_new_wrapped((gpointer)gdk_pixbuf_get_pixels(pb), len);
-		g_printerr("%zu\n", sizeof(guchar));
         g_signal_emit_by_name (app->appsrc, "push-buffer", buffer, &ret);
         gst_buffer_unref (buffer);
 
@@ -122,8 +125,10 @@ main (int argc, char *argv[])
    * feed data to appsrc. */
   app->loop = g_main_loop_new (NULL, TRUE);
   app->timer = g_timer_new();
+  //char* launcher = "appsrc name=mysource ! videoconvert ! x264enc tune='zerolatency' threads=1 ! mpegtsmux ! tcpserversink port=8554";
+  char* launcher = "zmqsrc ! video/x-raw, format=GRAY8, width=160, height=120, framerate=16/1 ! autovideosink";
+  app->pipeline = gst_parse_launch(launcher, NULL);
 
-  app->pipeline = gst_parse_launch("appsrc name=mysource ! videoparse ! queue ! videoconvert ! x264enc ! x264enc ! udpsink host=127.0.0.1 port=1234", NULL);
   g_assert (app->pipeline);
 
   bus = gst_pipeline_get_bus (GST_PIPELINE (app->pipeline));
@@ -133,23 +138,24 @@ main (int argc, char *argv[])
   gst_bus_add_watch (bus, (GstBusFunc) bus_message, app);
 
   /* get the appsrc */
-    app->appsrc = gst_bin_get_by_name (GST_BIN(app->pipeline), "mysource");
-    g_assert(app->appsrc);
-    g_signal_connect (app->appsrc, "need-data", G_CALLBACK (start_feed), app);
-    g_signal_connect (app->appsrc, "enough-data", G_CALLBACK (stop_feed), app);
+    //app->appsrc = gst_bin_get_by_name (GST_BIN(app->pipeline), "mysource");
+    //g_assert(app->appsrc);
+    //g_signal_connect (app->appsrc, "need-data", G_CALLBACK (start_feed), app);
+    //g_signal_connect (app->appsrc, "enough-data", G_CALLBACK (stop_feed), app);
 
   /* set the caps on the source */
 
-  g_object_set(G_OBJECT (app->appsrc),
+  /*g_object_set(G_OBJECT (app->appsrc),
 		"stream-type", 0,
 		"format", GST_FORMAT_TIME,
-		 gst_caps_new_simple ( "video/x-raw-rgb",
+		"caps", gst_caps_new_simple ( "video/x-raw",
 			"format", G_TYPE_STRING, "GRAY8",
+			"framerate", GST_TYPE_FRACTION, 16, 1,
 			"pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
 			"width", G_TYPE_INT, 160,
 			"height", G_TYPE_INT, 120,
 		NULL), NULL);
-
+*/
 
   /* go to playing and wait in a mainloop. */
   gst_element_set_state (app->pipeline, GST_STATE_PLAYING);
