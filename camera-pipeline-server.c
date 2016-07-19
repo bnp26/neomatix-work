@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
 	do
 	{
 		printf("reading data from file\n");
-		usleep(0.5);
+		usleep(1000);
 		size_t dataSize = fread(fdata, 1, size, ff);
 		
 		printf("real data size = %zu\n", dataSize);

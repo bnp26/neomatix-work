@@ -25,16 +25,13 @@ pthread_t zmq_thr;
 
 void* zmq_thread(void *data)
 {
-	void *context;
-	void *subscriber;
+	void *context, *subscriber;
 	int rc;
 
 	context = zmq_ctx_new();
 	subscriber = zmq_socket(context, ZMQ_SUB);
-	
 	rc = zmq_connect (subscriber, "tcp://127.0.0.1:5556");
-	
-	if(rc != -1)
+	if(rc == 0)
 		printf("connected to tcp://127.0.0.1:5556\n");
 	else
 	{
@@ -54,27 +51,22 @@ void* zmq_thread(void *data)
 	
 	while (1) {
 		zmq_msg_t msg;
-		zmq_msg_init (&msg);
-		rc = zmq_msg_recv (subscriber, &msg, 0);
+		rc = zmq_msg_init (&msg);
+		if(rc == -1)
+		{
+			printf("could not init msg!\n");
+			return NULL;
+		}
+		rc = zmq_msg_recv(&msg, subscriber,  0);
 		
 		if(rc != -1)
 		{	
-			printf("recieved a message from the server!\n");
-
 			frameCtx->data = zmq_msg_data(&msg);
-			int h,w;
-			printf("printing message byte style\n");
-			for(h = 0; h < 120; h++)
-			{
-				for(w = 0; w < 160; w++)
-				{
-					printf("[0x%x]", frameCtx->data[(h*160)+w]);
-				}
-				printf("\n");
-			}
 		}
 		rc = zmq_msg_close(&msg);
 	}
+	
+	printf("about to close\n");
 
 	zmq_close (subscriber);
 	zmq_ctx_destroy (context);
@@ -84,14 +76,20 @@ void* zmq_thread(void *data)
 void gst_controller_zmq_thr_creat(void)
 {
 	int ret;
-	pthread_t zmq_thr;	
 
-	ret = pthread_create(&zmq_thr, NULL, zmq_thread, NULL);
+	pthread_attr_t attr;
+
+	pthread_attr_init(&attr);
+
+	ret = pthread_create(&zmq_thr, &attr, zmq_thread, NULL);
 	if(ret != 0)
 	{
 		printf("could not create new thread!\n");
 		return;
 	}
+
+	pthread_attr_destroy(&attr);
+	return;
 }
 
 static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
@@ -120,8 +118,8 @@ int main(int argc, char *argv[])
 {
 	int major, minor, patch;
 	zmq_version (&major, &minor, &patch);
-	GstElement *pipeline, *source, *parser, *converter, *encoder, /* *payloader,*/ *sink;
-	GstElementFactory *parser_factory;
+	GstElement *pipeline, *source, *queue, *filter, *converter, *encoder, /* *payloader,*/ *sink;
+	GstCaps *filtercaps;
 
   	frameCtx = g_new0(Frame, 1);
 	frameCtx->data = malloc(160 * 120);
@@ -132,68 +130,71 @@ int main(int argc, char *argv[])
 	gst_init (&argc, &argv);
 	loop = g_main_loop_new(NULL, FALSE);
 
-	/* create gstreamer elements */
+	// create gstreamer elements 
 	//gst-launch-1.0 videotestsrc ! videoparse ! queue ! videoconvert ! x264enc ! udpsink host=127.0.0.1 port=8000
 	pipeline = gst_pipeline_new("camera-one-video-player");	
 	source = gst_element_factory_make ("appsrc", "app-src");
+	queue = gst_element_factory_make ("queue", "queue");
+	filter = gst_element_factory_make ("capsfilter", "filter");
 	converter = gst_element_factory_make("videoconvert","video-converter");
 	encoder = gst_element_factory_make("x264enc", "h264-encoder");
-	/*payloader = gst_element_factory_make("rtph264pay", "h264-payloader");*/
+	//payloader = gst_element_factory_make("rtph264pay", "h264-payloader");
 	sink = gst_element_factory_make("tcpserversink", "tcp-sink");
 	
-	if (!pipeline || !source || !converter || !encoder /*|| !payloader*/ || !sink) {
+	if (!pipeline || !source || !queue || !filter || !converter || !encoder || !sink) {
 		g_printerr ("Some elements could not be created. Exiting.\n");
 		return -1;
 	}
-
-
+	
 	g_object_set(G_OBJECT (source),
 		"stream-type", 0,
 		"format", GST_FORMAT_TIME,
 		NULL);
-	
-	g_object_set (G_OBJECT (converter),
-		"format",GST_VIDEO_FORMAT_GRAY8,
-		"framerate", GST_TYPE_FRACTION, 1, 16,
-		"pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
-		"width", 160,
-		"height", 120,
-		NULL);
 
-	g_object_set(	G_OBJECT (sink),
+	g_object_set(G_OBJECT (queue), "max_size_buffers", 24, NULL);
+
+	filtercaps = gst_caps_new_simple ("video/x-raw",
+			   "format", G_TYPE_STRING, "GRAY8",
+			   "width", G_TYPE_INT, 160,
+			   "height", G_TYPE_INT, 120,
+			   "framerate", GST_TYPE_FRACTION, 16, 1,
+			   NULL);
+
+	g_object_set (G_OBJECT (filter), "caps", filtercaps, NULL);
+	gst_caps_unref (filtercaps);
+
+	g_object_set(G_OBJECT (sink),
 		"host", "localhost",
 		"port", 5004,
 		NULL);	
 
+	gst_bin_add_many (GST_BIN (pipeline), source, queue, filter, converter, encoder, sink, NULL);
 	
-	gst_bin_add_many (GST_BIN (pipeline), source, parser, converter, encoder, /*payloader,*/ sink, NULL);
+	gst_element_link_many (source, queue, filter, converter, encoder, sink, NULL);
 	
-	gst_element_link_many (source, parser, converter, encoder, /*payloader,*/ sink, NULL);
-	
-
 	g_printerr("configured data, frameNum, timestamp, context, and the subscriber socket\n");
 
 	g_printerr ("Current 0MQ version is %d.%d.%d\n", major, minor, patch);
 
 	g_signal_connect (source, "need-data", G_CALLBACK (need_data), frameCtx);
 	
-	/*play */
+	//play
 	gst_element_set_state (pipeline, GST_STATE_PLAYING);
 	g_printerr("PLAY");
 	g_main_loop_run (loop);
 	
-	/*stop playing*/
+	//stop playing
 	gst_element_set_state (pipeline, GST_STATE_NULL);
 	g_printerr("STOP");
 
-	/* clean up */
+	// clean up 
 	
 	void *retval;
 	pthread_join(zmq_thr, &retval);
 	pthread_exit(retval);
 	free(frameCtx->data);
 	gst_object_unref (GST_OBJECT (source));
-	gst_object_unref (GST_OBJECT (parser));
+	gst_object_unref (GST_OBJECT (filter));
 	gst_object_unref (GST_OBJECT (converter));
 	gst_object_unref (GST_OBJECT (encoder));
 	/*gst_object_unref (GST_OBJECT (payloader));*/
