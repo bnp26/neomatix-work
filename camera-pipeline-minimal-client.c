@@ -2,26 +2,103 @@
 #include <assert.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
-//#include <gst/app/gstappsrc.h>
+#include <gst/app/gstappsrc.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <memory.h>
 #include <unistd.h>
 
+#define WIDTH 160
+#define HEIGHT 120
+
 static GMainLoop *loop;
 
 typedef struct _Frame Frame;
-
 struct _Frame {
+	GstElement *appsrc;
+
 	guint sourceid;
 	uint8_t *data;
+	guint64 offset;
 	int *frameNum;
 	GstClockTime timestamp;
 };
 
+typedef struct _Node Node;
+struct _Node {
+	uint8_t data [WIDTH*HEIGHT];
+	struct _Node * next;
+};
+
 Frame *frameCtx;
+Node *head, *tail;
 
 pthread_t zmq_thr;
+
+void * peek()
+{
+	if(head == NULL)
+	{
+		return NULL;
+	}
+	return head->data;
+}
+
+void init_queue(void)
+{
+	head = NULL;
+	tail = NULL;
+}
+
+int push(uint8_t * newdata, size_t size)
+{
+	if(newdata == NULL)
+	{
+		printf("data can't be null!\n");
+		return FALSE;
+	}
+
+	Node *temp = (Node*)malloc(sizeof(Node));
+	int x;	
+	for(x = 0; x < size; x++)
+	{
+		temp->data[x] = newdata[x];
+	}	
+
+	temp->next = NULL;
+
+	if(head == NULL && tail == NULL)
+	{
+		head = tail = temp;
+		return TRUE;
+	}
+
+	tail->next = temp;
+	tail = temp;
+	return TRUE;
+}
+
+uint8_t * pop(void)
+{
+	if(head == NULL) 
+	{
+		printf("Queue is Empty\n");
+		return NULL;
+	}
+	Node *temp = head;
+	uint8_t *rdata;
+	rdata = temp->data;
+
+	if(head == tail)
+		head = tail = NULL;
+	else
+	{
+		head = head->next;
+		free(temp);
+	}
+	return rdata;
+}
 
 void* zmq_thread(void *data)
 {
@@ -57,11 +134,19 @@ void* zmq_thread(void *data)
 			printf("could not init msg!\n");
 			return NULL;
 		}
-		rc = zmq_msg_recv(&msg, subscriber,  0);
+		rc = zmq_msg_recv(&msg, subscriber, 0);
 		
-		if(rc != -1)
+		size_t datasize = zmq_msg_size(&msg);
+		
+		uint8_t *rec_data = (uint8_t *)zmq_msg_data(&msg);
+		
+		if(rc == -1)
 		{	
-			frameCtx->data = zmq_msg_data(&msg);
+			printf("didn't recieve any data, sleeping for a second.\n");
+		}
+		else
+		{
+			push(rec_data, datasize);
 		}
 		rc = zmq_msg_close(&msg);
 	}
@@ -92,20 +177,33 @@ void gst_controller_zmq_thr_creat(void)
 	return;
 }
 
-static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
-{
 
+static gboolean read_data (Frame *frame)
+{
 	GstBuffer *buffer;
 	GstFlowReturn ret;
-		
-	buffer = gst_buffer_new_wrapped((gpointer)frame->data, sizeof(frame->data));
+	uint8_t *  pdata;
+	//popped data
+	pdata = peek();
+	
+	//printf("pointer to data in queue: %p", pdata);
+	gsize size = WIDTH*HEIGHT;	
+
+	buffer = gst_buffer_new ();
+	if(pdata == 0)
+		gst_buffer_memset(buffer, frame->offset, 0, size);
+	else
+	{
+		pdata = pop();
+		gst_buffer_fill(buffer, frame->offset, pdata, size);
+	}
+	frame->offset += +size;
 
 	GST_BUFFER_PTS (buffer) = frame->timestamp;	
 	GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, 16);
 	frame->timestamp += GST_BUFFER_DURATION(buffer);
-	frame->frameNum += 1;
-	
-	g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);	
+
+	g_signal_emit_by_name (frame->appsrc, "push-buffer", buffer, &ret);
 
 	if (ret != GST_FLOW_OK)
 	{
@@ -114,69 +212,79 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 	return TRUE;
 }                              
 
+static void start_feed (GstElement * pipeline, guint size, Frame *frame)
+{
+    if (frame->sourceid == 0) {
+		g_printerr("starting feed\n");
+        frame->sourceid = g_idle_add ((GSourceFunc) read_data, frame);
+    }
+}
+
+static void stop_feed (GstElement * pipeline, Frame *frame)
+{
+    if (frame->sourceid != 0) {
+        g_source_remove (frame->sourceid);
+        frame->sourceid = 0;
+		g_printerr("stopping feed\n");
+    }
+}
 int main(int argc, char *argv[])
 {
 	int major, minor, patch;
 	zmq_version (&major, &minor, &patch);
-	GstElement *pipeline, *source, *queue, *filter, *converter, *encoder, /* *payloader,*/ *sink;
+	GstElement *pipeline, *source, *converter, *sink;
+	GstAppSrc *appsrc;
 	GstCaps *filtercaps;
 
   	frameCtx = g_new0(Frame, 1);
-	frameCtx->data = malloc(160 * 120);
+	frameCtx->data = malloc(WIDTH * HEIGHT);
 	frameCtx->frameNum = 0;
 	frameCtx->timestamp = 0;
+	frameCtx->offset = 0;
+
+	init_queue();
 	gst_controller_zmq_thr_creat();	
 
 	gst_init (&argc, &argv);
-	loop = g_main_loop_new(NULL, FALSE);
+	loop = g_main_loop_new(NULL, TRUE);
 
 	// create gstreamer elements 
 	//gst-launch-1.0 videotestsrc ! videoparse ! queue ! videoconvert ! x264enc ! udpsink host=127.0.0.1 port=8000
 	pipeline = gst_pipeline_new("camera-one-video-player");	
 	source = gst_element_factory_make ("appsrc", "app-src");
-	queue = gst_element_factory_make ("queue", "queue");
-	filter = gst_element_factory_make ("capsfilter", "filter");
-	converter = gst_element_factory_make("videoconvert","video-converter");
-	encoder = gst_element_factory_make("jpegenc", "jpeg-encoder");
-	//payloader = gst_element_factory_make("rtph264pay", "h264-payloader");
-	sink = gst_element_factory_make("tcpserversink", "tcp-sink");
-	
-	if (!pipeline || !source || !queue || !filter || !converter || !encoder || !sink) {
+	converter = gst_element_factory_make ("videoconvert", "converter"); 
+	sink = gst_element_factory_make("xvimagesink", "sink");
+	frameCtx->appsrc = source;
+	if (!pipeline || !source || !converter || !sink) {
 		g_printerr ("Some elements could not be created. Exiting.\n");
 		return -1;
 	}
 	
-	g_object_set(G_OBJECT (source),
-		"stream-type", 0,
-		"format", GST_FORMAT_TIME,
-		NULL);
-
-	g_object_set(G_OBJECT (queue), "max_size_buffers", 24, NULL);
-
 	filtercaps = gst_caps_new_simple ("video/x-raw",
 			   "format", G_TYPE_STRING, "GRAY8",
 			   "width", G_TYPE_INT, 160,
 			   "height", G_TYPE_INT, 120,
-			   "framerate", GST_TYPE_FRACTION, 16, 1,
+			   "framerate", GST_TYPE_FRACTION, 0, 1,
 			   NULL);
 
-	g_object_set (G_OBJECT (filter), "caps", filtercaps, NULL);
+	appsrc = GST_APP_SRC(source);
+	
+	gst_app_src_set_caps (appsrc, filtercaps);
+	gst_app_src_set_size (appsrc, WIDTH*HEIGHT*20);
+	gst_app_src_set_stream_type (appsrc, GST_APP_STREAM_TYPE_STREAM);
+	gst_app_src_set_latency (appsrc, -1,10000);
 	gst_caps_unref (filtercaps);
 
-	g_object_set(G_OBJECT (sink),
-		"host", "127.0.0.1",
-		"port", 5011,
-		NULL);	
-
-	gst_bin_add_many (GST_BIN (pipeline), source, queue, filter, converter, encoder, sink, NULL);
+	gst_bin_add_many (GST_BIN (pipeline), source, converter, sink, NULL);
 	
-	gst_element_link_many (source, queue, filter, converter, encoder, sink, NULL);
+	gst_element_link_many (source, converter, sink, NULL);
 	
 	g_printerr("configured data, frameNum, timestamp, context, and the subscriber socket\n");
 
 	g_printerr ("Current 0MQ version is %d.%d.%d\n", major, minor, patch);
 
-	g_signal_connect (source, "need-data", G_CALLBACK (need_data), frameCtx);
+	g_signal_connect(source, "need-data", G_CALLBACK(start_feed), frameCtx);
+ 	g_signal_connect(source, "enough-data", G_CALLBACK(stop_feed), frameCtx);
 	
 	//play
 	gst_element_set_state (pipeline, GST_STATE_PLAYING);
@@ -194,10 +302,7 @@ int main(int argc, char *argv[])
 	pthread_exit(retval);
 	free(frameCtx->data);
 	gst_object_unref (GST_OBJECT (source));
-	gst_object_unref (GST_OBJECT (filter));
 	gst_object_unref (GST_OBJECT (converter));
-	gst_object_unref (GST_OBJECT (encoder));
-	/*gst_object_unref (GST_OBJECT (payloader));*/
 	gst_object_unref (GST_OBJECT (sink));
 	gst_object_unref (GST_OBJECT (pipeline));
 

@@ -5,12 +5,15 @@
 //#include <gst/app/gstappsrc.h>
 #include <stdlib.h>
 #include <pthread.h>
-#include <memory.h>
 #include <unistd.h>
+
+#define WIDTH 160
+#define HEIGHT 120
 
 static GMainLoop *loop;
 
 typedef struct _Frame Frame;
+typedef struct _Node Node;
 
 struct _Frame {
 	guint sourceid;
@@ -19,9 +22,96 @@ struct _Frame {
 	GstClockTime timestamp;
 };
 
+struct _Node {
+	uint8_t * data;
+	struct _Node * next;
+};
+
 Frame *frameCtx;
+Node *head, *tail;
 
 pthread_t zmq_thr;
+
+void init_queue(void)
+{
+	head = NULL;
+	tail = NULL;
+}
+
+void print_queue(void) 
+{
+	Node *temp = head;
+	while(head != NULL)
+	{
+		printf("[%p, %zu]->", &temp, sizeof(temp->data));
+		temp = temp->next;
+	}
+	printf("NULL\n");
+}
+
+int push(uint8_t * newdata)
+{
+	if(newdata == NULL)
+	{
+		printf("data can't be null!\n");
+		return FALSE;
+	}
+	if(sizeof(newdata) != WIDTH*HEIGHT)
+	{
+		printf("data must be of size %i\n", WIDTH*HEIGHT);
+		return FALSE;
+	}
+
+	Node *temp = (Node*)malloc(sizeof(Node));
+	
+	temp->data = newdata;
+	temp->next = NULL;
+
+	if(head == NULL && tail == NULL)
+	{
+		head = tail = temp;
+		print_queue();
+		return TRUE;
+	}
+
+	tail->next = temp;
+	tail = temp;
+	print_queue();
+	return TRUE;
+}
+
+uint8_t * pop(void)
+{
+	if(head == NULL) 
+	{
+		printf("Queue is Empty\n");
+		return NULL;
+	}
+	Node *temp = head;
+	uint8_t *rdata;
+	rdata = temp->data;
+
+	if(head == tail)
+		head = tail = NULL;
+	else
+	{
+		head = head->next;
+		free(temp);
+	}
+	print_queue();
+	return rdata;
+}
+
+uint8_t * peek(void)
+{
+	if(head == NULL)
+	{
+		printf("Queue is empty\n");
+		return NULL;
+	}
+	return head->data;
+}
+
 
 void* zmq_thread(void *data)
 {
@@ -59,9 +149,14 @@ void* zmq_thread(void *data)
 		}
 		rc = zmq_msg_recv(&msg, subscriber,  0);
 		
-		if(rc != -1)
+		if(rc == -1)
 		{	
-			frameCtx->data = zmq_msg_data(&msg);
+			printf("didn't recieve any data, sleeping for a second.\n");
+			sleep(1);
+		}
+		else
+		{
+			push(zmq_msg_data(&msg));
 		}
 		rc = zmq_msg_close(&msg);
 	}
@@ -97,8 +192,11 @@ static gboolean need_data (GstElement * appsrc, guint size, Frame * frame)
 
 	GstBuffer *buffer;
 	GstFlowReturn ret;
-		
-	buffer = gst_buffer_new_wrapped((gpointer)frame->data, sizeof(frame->data));
+	
+	//popped data
+	uint8_t *  pdata = pop();
+
+	buffer = gst_buffer_new_wrapped((gpointer)pdata, sizeof(pdata));
 
 	GST_BUFFER_PTS (buffer) = frame->timestamp;	
 	GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, 16);
@@ -118,13 +216,15 @@ int main(int argc, char *argv[])
 {
 	int major, minor, patch;
 	zmq_version (&major, &minor, &patch);
-	GstElement *pipeline, *source, *queue, *filter, *converter, *encoder, /* *payloader,*/ *sink;
+	GstElement *pipeline, *source, *converter, *sink;
 	GstCaps *filtercaps;
 
   	frameCtx = g_new0(Frame, 1);
 	frameCtx->data = malloc(160 * 120);
 	frameCtx->frameNum = 0;
 	frameCtx->timestamp = 0;
+
+	init_queue();
 	gst_controller_zmq_thr_creat();	
 
 	gst_init (&argc, &argv);
@@ -134,25 +234,14 @@ int main(int argc, char *argv[])
 	//gst-launch-1.0 videotestsrc ! videoparse ! queue ! videoconvert ! x264enc ! udpsink host=127.0.0.1 port=8000
 	pipeline = gst_pipeline_new("camera-one-video-player");	
 	source = gst_element_factory_make ("appsrc", "app-src");
-	queue = gst_element_factory_make ("queue", "queue");
-	filter = gst_element_factory_make ("capsfilter", "filter");
-	converter = gst_element_factory_make("videoconvert","video-converter");
-	encoder = gst_element_factory_make("jpegenc", "jpeg-encoder");
-	//payloader = gst_element_factory_make("rtph264pay", "h264-payloader");
-	sink = gst_element_factory_make("tcpserversink", "tcp-sink");
+	converter = gst_element_factory_make ("videoconvert", "converter"); 
+	sink = gst_element_factory_make("xvimagesink", "sink");
 	
-	if (!pipeline || !source || !queue || !filter || !converter || !encoder || !sink) {
+	if (!pipeline || !source || !converter || !sink) {
 		g_printerr ("Some elements could not be created. Exiting.\n");
 		return -1;
 	}
 	
-	g_object_set(G_OBJECT (source),
-		"stream-type", 0,
-		"format", GST_FORMAT_TIME,
-		NULL);
-
-	g_object_set(G_OBJECT (queue), "max_size_buffers", 24, NULL);
-
 	filtercaps = gst_caps_new_simple ("video/x-raw",
 			   "format", G_TYPE_STRING, "GRAY8",
 			   "width", G_TYPE_INT, 160,
@@ -160,17 +249,18 @@ int main(int argc, char *argv[])
 			   "framerate", GST_TYPE_FRACTION, 16, 1,
 			   NULL);
 
-	g_object_set (G_OBJECT (filter), "caps", filtercaps, NULL);
+	g_object_set(G_OBJECT (source),
+		"stream-type", 0,
+		"max-bytes", 19200,
+		"caps", filtercaps,
+		"size", -1,
+		NULL);
+
 	gst_caps_unref (filtercaps);
 
-	g_object_set(G_OBJECT (sink),
-		"host", "127.0.0.1",
-		"port", 5011,
-		NULL);	
-
-	gst_bin_add_many (GST_BIN (pipeline), source, queue, filter, converter, encoder, sink, NULL);
+	gst_bin_add_many (GST_BIN (pipeline), source, converter, sink, NULL);
 	
-	gst_element_link_many (source, queue, filter, converter, encoder, sink, NULL);
+	gst_element_link_many (source, converter, sink, NULL);
 	
 	g_printerr("configured data, frameNum, timestamp, context, and the subscriber socket\n");
 
@@ -194,10 +284,7 @@ int main(int argc, char *argv[])
 	pthread_exit(retval);
 	free(frameCtx->data);
 	gst_object_unref (GST_OBJECT (source));
-	gst_object_unref (GST_OBJECT (filter));
 	gst_object_unref (GST_OBJECT (converter));
-	gst_object_unref (GST_OBJECT (encoder));
-	/*gst_object_unref (GST_OBJECT (payloader));*/
 	gst_object_unref (GST_OBJECT (sink));
 	gst_object_unref (GST_OBJECT (pipeline));
 
@@ -205,4 +292,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
