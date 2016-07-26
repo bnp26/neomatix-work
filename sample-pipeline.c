@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 typedef struct _Node Node;
 struct _Node {
@@ -25,11 +27,11 @@ struct _Queue {
 
 int want = 1;
 
-uint8_t b_white[160*120];
 uint8_t b_black[160*120];
 uint8_t frame[160*120];
 
 pthread_t zmq_thr;
+sem_t mutex;
 
 size_t peek(Queue * queue) 
 { 
@@ -37,7 +39,7 @@ size_t peek(Queue * queue)
     { 
         return -1; 
     } 
-    return (&queue->head)->size; 
+    return queue->head->size; 
 } 
  
 Queue * init_queue(void) 
@@ -48,6 +50,32 @@ Queue * init_queue(void)
 	queue->size = 0;
 	return queue;
 } 
+
+Node * pop(Queue * queue)
+{ 
+    if(queue->head == NULL)  
+    { 
+        printf("Queue is Empty\n"); 
+        return NULL; 
+    } 
+    
+	Node *temp = (Node*)malloc(sizeof(Node)); 
+	temp->data = queue->head->data;
+	temp->size = queue->head->size;
+	temp->next = NULL;	
+	
+	if(queue->head->next == NULL)
+	{
+		queue->head = NULL;
+		queue->tail = NULL;
+	}
+    else 
+    { 
+		*queue->head = *queue->head->next; 
+    } 
+	queue->size -= 1;
+    return temp; 
+}
  
 int push(Queue * queue, gpointer newdata, size_t size) 
 { 
@@ -56,7 +84,10 @@ int push(Queue * queue, gpointer newdata, size_t size)
         printf("data can't be null!\n"); 
         return FALSE; 
     } 
- 
+	if(size >= 2)
+	{
+		pop(queue);
+	}
     Node *temp = (Node*)malloc(sizeof(Node)); 
     temp->size = size; 
     temp->data = newdata;
@@ -64,41 +95,18 @@ int push(Queue * queue, gpointer newdata, size_t size)
 
     if(queue->head == NULL) 
     { 
-        *queue->head	= *temp; 
-		*queue->tail = *temp;
+        queue->head = temp; 
+		queue->tail = temp;
     } 
 	else
 	{
-		*queue->tail->next = *temp;
-		queue->tail = &temp;
+		queue->tail->next = temp;
+		queue->tail = temp;
 	}
-	
-	printf("pushing newdata up of size %zu\n", temp->size);
+	queue->size += 1;	
     return TRUE; 
 } 
  
-Node * pop(Queue * queue)
-{ 
-    if(queue->head == NULL)  
-    { 
-        printf("Queue is Empty\n"); 
-        return NULL; 
-    } 
-    Node *temp = &queue->head; 
- 
-    if(queue->head == queue->tail) 
-	{
-		queue->head = NULL; 
-		queue->tail = NULL;
-		printf("popped last Node\n");
-	}
-    else 
-    { 
-        queue->head = &queue->head->next; 
-		printf("popped a node\n");
-    } 
-    return temp; 
-}
 
 void* zmq_thread(void *data)
 {
@@ -127,6 +135,9 @@ void* zmq_thread(void *data)
         printf("could not subscribe to client\n");
         return NULL;
     }
+	int black = TRUE;
+	uint8_t * lastimage;
+	size_t lastimagesize;
     while (1) {
         zmq_msg_t msg;
         rc = zmq_msg_init (&msg);
@@ -136,22 +147,28 @@ void* zmq_thread(void *data)
             return NULL;
         }
         rc = zmq_msg_recv(&msg, subscriber, ZMQ_NOBLOCK);
-
-        if(rc == -1)
+		
+		sem_wait(&mutex);
+        if(rc == -1 && !black)
         {
-			push(queue, b_white, 160*120);		
-			printf("pushed white array\n");
+			push(queue, lastimage, lastimagesize);
+		}
+		else if(rc == -1)
+		{
+			push(queue, b_black, 160*120);		
 		}
         else
         {
 			size_t datasize = zmq_msg_size(&msg);
 
 			uint8_t *rec_data = (uint8_t *)zmq_msg_data(&msg);
-
+			lastimage = rec_data;
+			lastimagesize = datasize;
             push(queue, rec_data, datasize);
+			black = FALSE;
         }
+		sem_post(&mutex);
         rc = zmq_msg_close(&msg);
-		usleep(1/16);
     }
 
     printf("about to close\n");
@@ -197,16 +214,20 @@ static void prepare_buffer(GstAppSrc* appsrc, Queue * queue) {
 	Node * pnode;
 	uint8_t * data;
 	
-	size_t nnodesize = peek(queue);
+	size_t nnodesize;
+	sem_wait(&mutex);
+	pnode = pop(queue);
+	sem_post(&mutex);
 		
-	if(nnodesize != -1)
+	if(pnode != NULL)
+	{
+		nnodesize = pnode->size;
 		printf("peek has data of size: %zu\n", nnodesize);
+	}
 	else
 	{
 		printf("peek has no data :(\n");
-		return;
 	}
-	pnode = pop(queue);
 	data = pnode->data;
   buffer = gst_buffer_new_wrapped_full( 0, (gpointer)data, size, 0, size, NULL, NULL );
 	free(pnode);
@@ -237,18 +258,9 @@ gint main (gint argc, gchar *argv[]) {
 int i;
 Queue *queue = init_queue();  
 for (i = 0; i < 160*120; i++) {
-	 if(i%2 == 0)
-	 {
-		 b_black[i] = 0;
-		 b_white[i] = 0xFF;
-	 }
-	 else
-	 {
-
-		b_black[i] = 0xFF; b_white[i] = 0; 
-	 }
-  }
-
+	 b_black[i] = 0;
+}
+	sem_init(&mutex, 0, 1);
   gst_controller_zmq_thr_creat(queue);
   sleep(2);
   /* init GStreamer */
@@ -266,7 +278,7 @@ for (i = 0; i < 160*120; i++) {
 				     "format", G_TYPE_STRING, "GRAY8",
 				     "width", G_TYPE_INT, 160,
 				     "height", G_TYPE_INT, 120,
-				     "framerate", GST_TYPE_FRACTION, 0, 1,
+				     "framerate", GST_TYPE_FRACTION, 16, 1,
 				     NULL), NULL);
   gst_bin_add_many (GST_BIN (pipeline), appsrc, conv, videosink, NULL);
   gst_element_link_many (appsrc, conv, videosink, NULL);
@@ -277,6 +289,7 @@ for (i = 0; i < 160*120; i++) {
 		"format", GST_FORMAT_TIME,
     "is-live", TRUE,
 	"max-bytes", 19200,
+	"block", TRUE,
     NULL);
   g_signal_connect (appsrc, "need-data", G_CALLBACK (cb_need_data), queue);
 
@@ -291,6 +304,6 @@ for (i = 0; i < 160*120; i++) {
   /* clean up */
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gst_object_unref (GST_OBJECT (pipeline));
-
+	sem_destroy(&mutex);
   return 0;
 }
