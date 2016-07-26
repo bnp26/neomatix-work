@@ -21,6 +21,7 @@ struct _Frame {
 	guint sourceid;
 	uint8_t *data;
 	guint64 offset;
+	size_t size;
 	int *frameNum;
 	GstClockTime timestamp;
 };
@@ -28,6 +29,7 @@ struct _Frame {
 typedef struct _Node Node;
 struct _Node {
 	uint8_t data [WIDTH*HEIGHT];
+	size_t size;
 	struct _Node * next;
 };
 
@@ -36,13 +38,13 @@ Node *head, *tail;
 
 pthread_t zmq_thr;
 
-void * peek()
+size_t peek()
 {
 	if(head == NULL)
 	{
-		return NULL;
+		return -1;
 	}
-	return head->data;
+	return head->size;
 }
 
 void init_queue(void)
@@ -65,7 +67,7 @@ int push(uint8_t * newdata, size_t size)
 	{
 		temp->data[x] = newdata[x];
 	}	
-
+	temp->size = size;
 	temp->next = NULL;
 
 	if(head == NULL && tail == NULL)
@@ -79,7 +81,7 @@ int push(uint8_t * newdata, size_t size)
 	return TRUE;
 }
 
-uint8_t * pop(void)
+Node * pop(void)
 {
 	if(head == NULL) 
 	{
@@ -87,17 +89,14 @@ uint8_t * pop(void)
 		return NULL;
 	}
 	Node *temp = head;
-	uint8_t *rdata;
-	rdata = temp->data;
 
 	if(head == tail)
 		head = tail = NULL;
 	else
 	{
 		head = head->next;
-		free(temp);
 	}
-	return rdata;
+	return temp;
 }
 
 void* zmq_thread(void *data)
@@ -182,22 +181,31 @@ static gboolean read_data (Frame *frame)
 {
 	GstBuffer *buffer;
 	GstFlowReturn ret;
-	uint8_t *  pdata;
+	Node * pnode;
+	size_t psize;
+	uint8_t * pdata;
 	//popped data
-	pdata = peek();
-	
 	//printf("pointer to data in queue: %p", pdata);
-	gsize size = WIDTH*HEIGHT;	
+	
+	g_printerr("current appsrc level of bytes = %" G_GUINT64_FORMAT "\n", gst_app_src_get_current_level_bytes(GST_APP_SRC(frame->appsrc)));	
 
 	buffer = gst_buffer_new ();
-	if(pdata == 0)
-		gst_buffer_memset(buffer, frame->offset, 0, size);
+		
+	psize = (size_t)peek();
+	if(psize == -1)
+	{
+		g_printerr("no nodes in queue\n");
+		return TRUE;
+	}
+	if(frame->size < psize)
+		gst_buffer_memset(buffer, frame->offset, 0, frame->size);
 	else
 	{
-		pdata = pop();
-		gst_buffer_fill(buffer, frame->offset, pdata, size);
+		pnode = pop();
+		pdata = pnode->data;
+		gst_buffer_fill(buffer, frame->offset, pdata, psize);
 	}
-	frame->offset += +size;
+	frame->offset += frame->size;
 
 	GST_BUFFER_PTS (buffer) = frame->timestamp;	
 	GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, 16);
@@ -216,6 +224,7 @@ static void start_feed (GstElement * pipeline, guint size, Frame *frame)
 {
     if (frame->sourceid == 0) {
 		g_printerr("starting feed\n");
+		frame->size = size;
         frame->sourceid = g_idle_add ((GSourceFunc) read_data, frame);
     }
 }
