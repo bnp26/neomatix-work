@@ -262,9 +262,10 @@ int main(int argc, char *argv[])
 	pipeline = gst_pipeline_new("camera-one-video-player");	
 	source = gst_element_factory_make ("appsrc", "app-src");
 	converter = gst_element_factory_make ("videoconvert", "converter"); 
+	encoder = gst_element_factory_make ("jpegenc", "jpgencoder");
 	sink = gst_element_factory_make("xvimagesink", "sink");
 	frameCtx->appsrc = source;
-	if (!pipeline || !source || !converter || !sink) {
+	if (!pipeline || !source || !converter || !encoder || !sink) {
 		g_printerr ("Some elements could not be created. Exiting.\n");
 		return -1;
 	}

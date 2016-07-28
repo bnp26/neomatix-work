@@ -11,9 +11,12 @@
 #include <pthread.h>
 #include <semaphore.h>
 
+
 typedef struct _Node Node;
 struct _Node {
-    gpointer data;
+	gpointer data;
+	int frame;
+	guint64 duration;
     size_t size;
     struct _Node * next;
 };
@@ -62,6 +65,8 @@ Node * pop(Queue * queue)
 	Node *temp = (Node*)malloc(sizeof(Node)); 
 	temp->data = queue->head->data;
 	temp->size = queue->head->size;
+	temp->frame = queue->head->frame;
+	temp->duration = queue->head->duration;	
 	temp->next = NULL;	
 	
 	if(queue->head->next == NULL)
@@ -71,33 +76,81 @@ Node * pop(Queue * queue)
 	}
     else 
     { 
-		*queue->head = *queue->head->next; 
+		queue->head = queue->head->next; 
     } 
 	queue->size -= 1;
     return temp; 
 }
- 
+
+Node * has_data(Queue * queue, gpointer newdata)
+{
+	if(queue->head == NULL)
+	{
+		return NULL;
+	}
+	Node *temp = queue->head;
+
+	do{
+		if(temp->data == newdata)
+			return temp;
+		else
+			temp = temp->next;
+
+	}while(temp->next != NULL);
+	return NULL;
+}
+
+
 int push(Queue * queue, gpointer newdata, size_t size) 
-{ 
+{
+	Node *temp, *tempcopy;
     if(newdata == NULL) 
     { 
         printf("data can't be null!\n"); 
         return FALSE; 
     } 
-	if(size >= 2)
+	
+	temp = has_data(queue, newdata);	
+	guint64 duration = gst_util_uint64_scale_int (1, GST_SECOND, 16);
+	guint64 timestamp = duration;
+	if(temp == NULL)
+	{
+		temp = (Node*)malloc(sizeof(Node)); 
+		temp->data = newdata;
+		temp->size = size;
+		temp->duration = duration; 
+		temp->frame = queue->tail->frame + 1;
+		temp->next = NULL; 
+	}
+	else if(temp->data == b_black)
+	{
+		temp->frame = ;
+		queue->time += temp->duration;
+	}
+	else
+	{
+		tempcopy = (Node*)malloc(sizeof(Node)); 
+		tempcopy->data = temp->data;
+		temp->size = temp->size;
+		temp->duration = temp-duration; 
+		temp->timestamp = queue->tail->timestamp + temp->duration;
+		temp->next = NULL; 
+
+	}
+//--to limit max queue size--
+/*
+	else if(queue->size >= 32)
 	{
 		pop(queue);
+		
 	}
-    Node *temp = (Node*)malloc(sizeof(Node)); 
-    temp->size = size; 
-    temp->data = newdata;
-	temp->next = NULL; 
+*/
 
-    if(queue->head == NULL) 
+	if(queue->head == NULL) 
     { 
         queue->head = temp; 
 		queue->tail = temp;
-    } 
+    }
 	else
 	{
 		queue->tail->next = temp;
@@ -200,8 +253,6 @@ void gst_controller_zmq_thr_creat(Queue * queue)
 
 static void prepare_buffer(GstAppSrc* appsrc, Queue * queue) {
 
-  static gboolean white = FALSE;
-  static GstClockTime timestamp = 0;
   GstBuffer *buffer;
   guint size;
   GstFlowReturn ret;
@@ -213,8 +264,10 @@ static void prepare_buffer(GstAppSrc* appsrc, Queue * queue) {
 
 	Node * pnode;
 	uint8_t * data;
-	
+	guint64 timestamp;
+	guint64 duration;
 	size_t nnodesize;
+
 	sem_wait(&mutex);
 	pnode = pop(queue);
 	sem_post(&mutex);
@@ -222,22 +275,20 @@ static void prepare_buffer(GstAppSrc* appsrc, Queue * queue) {
 	if(pnode != NULL)
 	{
 		nnodesize = pnode->size;
+		data = pnode->data;
+		timestamp = pnode->timestamp;
+		duration = pnode->duration;
 		printf("peek has data of size: %zu\n", nnodesize);
 	}
 	else
 	{
 		printf("peek has no data :(\n");
 	}
-	data = pnode->data;
   buffer = gst_buffer_new_wrapped_full( 0, (gpointer)data, size, 0, size, NULL, NULL );
 	free(pnode);
-  white = !white;
 
   GST_BUFFER_PTS (buffer) = timestamp;
-  GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, 16);
-
-
-  timestamp += GST_BUFFER_DURATION (buffer);
+  GST_BUFFER_DURATION (buffer) = duration;
 
   ret = gst_app_src_push_buffer(appsrc, buffer);
 
@@ -262,7 +313,7 @@ for (i = 0; i < 160*120; i++) {
 }
 	sem_init(&mutex, 0, 1);
   gst_controller_zmq_thr_creat(queue);
-  sleep(2);
+  sleep(1);
   /* init GStreamer */
   gst_init (&argc, &argv);
 
@@ -270,6 +321,7 @@ for (i = 0; i < 160*120; i++) {
   pipeline = gst_pipeline_new ("pipeline");
   appsrc = gst_element_factory_make ("appsrc", "source");
   conv = gst_element_factory_make ("videoconvert", "conv");
+//  enc = gst_element_factory_make ("jpegenc", "jpgenc");
   videosink = gst_element_factory_make ("xvimagesink", "videosink");
 
   /* setup */
