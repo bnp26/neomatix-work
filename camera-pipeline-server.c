@@ -31,7 +31,7 @@ int main(int argc, char *argv[])
 	//ff: frames file
 	FILE *ff;
 
-	size_t bpp, size;
+	size_t size;
 	
 	if(argc != 2)
 	{
@@ -39,7 +39,6 @@ int main(int argc, char *argv[])
 		printf("FORMAT:\t./camera-pipeline-server <file>\n");
 	}
 
-	bpp	= 8;
 	size = WIDTH*HEIGHT;
 	
 //	int64_t affinity;
@@ -61,12 +60,8 @@ int main(int argc, char *argv[])
 
 	ff=fopen(argv[1], "r");
 	sleep(1);	
-	time_t endtime;
-	time_t runtime_len = 20;
 	time_t curtime = time(NULL);
 	
-	endtime = curtime + runtime_len;
-	int print = 0;
 	int x = 0;
 	//zchunk_t *chunk;
 	//zframe_t *msg;
@@ -76,46 +71,31 @@ int main(int argc, char *argv[])
 	{
 		zmq_msg_t msg;
 		printf("reading data from file\n");
-		usleep(1000);
 		size_t dataSize = fread(&fdata, 1, size, ff);
-		
+			
 		if(dataSize < size)
 		{
 			printf("finished reading file, going to the beginning \n");
 			rewind(ff);
 			continue;
 		}
-		printf("real data size = %zu\n", sizeof(fdata));
 
-		rc = zmq_msg_init_size(&msg, dataSize);
-		assert(rc == 0);
 	//	print_data(zmq_msg_data(&msg));
 //		void * msg_data = zmq_msg_data(&msg);	
-		size_t data_size = zmq_msg_size(&msg);
-
-		printf("data_size = %zu\n", data_size);
+		
+		rc = zmq_msg_init_size(&msg, dataSize);
+		assert(rc == 0);
 		memcpy(zmq_msg_data(&msg), fdata, dataSize);
 		
-		uint8_t * pdata = zmq_msg_data(&msg);
-		assert(pdata[0] == fdata[0]);
-		printf("[%d%d%d%d]\n", 
-				pdata[0],pdata[1], pdata[2], pdata[3]);	
-		
-		//void *location = memmove(zmq_msg_data(&msg), fdata, dataSize);
-		
-		printf("pointer to data =  %p\n", zmq_msg_data(&msg));
-
-		printf("read file, sending data.\n");	
-		
-		rc = zmq_msg_send (&msg, publisher, ZMQ_DONTWAIT);
+		rc = zmq_msg_send (&msg, publisher, 0);
 		assert(rc == dataSize);
-
 		zmq_msg_close(&msg);
 		
-		printf("sent frame #%i\n", x);
 		time(&curtime);
 		x+=1;
-	}while(x < 20000);	
+		printf("sent frame #%i\n",(x%24));
+		usleep(62500);
+	}while(x < 24*4);	
 	printf("sent data for 120 seconds. That's enough... right???\n");
 	return 0;
 }
