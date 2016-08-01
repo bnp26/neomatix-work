@@ -254,7 +254,7 @@ static void cb_need_data (GstElement *appsrc, guint unused_size, gpointer user_d
 
 gint main (gint argc, gchar *argv[]) {
 
-  GstElement *pipeline, *appsrc, *conv, *videosink;
+  GstElement *pipeline, *appsrc, *conv, *encoder, *payloader, *videosink;
 int i;
 Queue *queue = init_queue();  
 for (i = 0; i < 160*120; i++) {
@@ -270,7 +270,10 @@ for (i = 0; i < 160*120; i++) {
   pipeline = gst_pipeline_new ("pipeline");
   appsrc = gst_element_factory_make ("appsrc", "source");
   conv = gst_element_factory_make ("videoconvert", "conv");
-  videosink = gst_element_factory_make ("xvimagesink", "videosink");
+  encoder = gst_element_factory_make("x264enc", "encoder0");
+  payloader = gst_element_factory_make("rtph264pay", "payloader0");
+  videosink = gst_element_factory_make ("udpsink", "videosink");
+//  videosink = gst_element_factory_make ("xvimagesink", "videosink");
 
   /* setup */
   g_object_set (G_OBJECT (appsrc), "caps",
@@ -285,20 +288,26 @@ for (i = 0; i < 160*120; i++) {
 		"format", GST_FORMAT_TIME,
     "is-live", TRUE,
 	"max-bytes", 19200,
-	"block", FALSE,
     NULL);
-
+/*
 	g_object_set (G_OBJECT (videosink), 
 		"sync", FALSE, NULL);
-  gst_bin_add_many (GST_BIN (pipeline), appsrc, conv, videosink, NULL);
-  gst_element_link_many (appsrc, conv, videosink, NULL);
+*/
+	g_object_set (G_OBJECT (videosink),
+		"sync", FALSE,
+		"async", TRUE,
+		"host", "127.0.0.1",
+		"port", 5000,
+		NULL);
+	gst_bin_add_many (GST_BIN (pipeline), appsrc, conv, encoder, payloader, videosink, NULL);
+  gst_element_link_many (appsrc, conv, encoder, payloader, videosink, NULL);
 
   /* setup appsrc */
   g_signal_connect (appsrc, "need-data", G_CALLBACK (cb_need_data), queue);
 
   /* play */
   gst_element_set_state (pipeline, GST_STATE_PLAYING);
-  
+	g_printerr("PLAYING\n"); 
 	g_main_run(loop);
 
 

@@ -95,7 +95,7 @@ int main(int argc, char *argv[])
 		x+=1;
 		printf("sent frame #%i\n",(x%24));
 		usleep(62500);
-	}while(x < 24*4);	
+	}while(x < 24*100);	
 	printf("sent data for 120 seconds. That's enough... right???\n");
 	return 0;
 }
