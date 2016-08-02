@@ -256,13 +256,26 @@ gint main (gint argc, gchar *argv[]) {
 
   GstElement *pipeline, *appsrc, *conv, *encoder, *payloader, *videosink;
 int i;
+
+
+	char * address;
+	int port;
+	if (argc != 3)
+	{
+		printf("incorrect paramater usage.\n");
+		printf("Usage: camera-rtp-client | address  | port\n");
+		return -1;
+	}
+	address = argv[1];
+	port = atoi(argv[2]);
+	
 Queue *queue = init_queue();  
 for (i = 0; i < 160*120; i++) {
 	 b_black[i] = 0;
 }
 	sem_init(&mutex, 0, 1);
   gst_controller_zmq_thr_creat(queue);
-  /* init GStreamer */
+  /* init GStreamer */	
   gst_init (&argc, &argv);
 	loop = g_main_loop_new (NULL, TRUE);
 
@@ -296,8 +309,8 @@ for (i = 0; i < 160*120; i++) {
 	g_object_set (G_OBJECT (videosink),
 		"sync", FALSE,
 		"async", TRUE,
-		"host", "127.0.0.1",
-		"port", 5000,
+		"host", address,
+		"port", port,
 		NULL);
 	gst_bin_add_many (GST_BIN (pipeline), appsrc, conv, encoder, payloader, videosink, NULL);
   gst_element_link_many (appsrc, conv, encoder, payloader, videosink, NULL);
@@ -307,7 +320,7 @@ for (i = 0; i < 160*120; i++) {
 
   /* play */
   gst_element_set_state (pipeline, GST_STATE_PLAYING);
-	g_printerr("PLAYING\n"); 
+	g_printerr("PLAYING on %s:%i\n", address, port); 
 	g_main_run(loop);
 
 
@@ -322,4 +335,4 @@ for (i = 0; i < 160*120; i++) {
   gst_object_unref (GST_OBJECT (pipeline));
 	sem_destroy(&mutex);
   return 0;
-}
+  }
